@@ -9,6 +9,11 @@
 
 # python cache
 __pycache__
+*.pyc
+
+# virtual environments
+venv/
+env/
 
 # log dir
 log/*
@@ -18,3 +23,12 @@ cache/*
 
 # settings file
 settings.ini
+
+# script-generated output (Excel/CSV reports, per-vCenter logs)
+*.xlsx
+DepartmentGroupCounts.csv
+
+# never commit key material
+*.pem
+*.key
+*.pfx

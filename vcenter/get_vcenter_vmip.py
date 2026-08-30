@@ -1,36 +1,91 @@
-from com.vmware.vcenter.vm_client import Power
-from com.vmware.vcenter.vm_client import Network
+#!/usr/bin/env python3
+"""Export VM name / IP address pairs from vCenter to an Excel file.
 
-# Connect to vCenter server
-from vmware.vapi.vsphere.client import create_vsphere_client
-client = create_vsphere_client(server="<VCENTER_SERVER_IP>", username="<USERNAME>", password="<PASSWORD>")
+Uses the VMware vSphere Automation SDK for Python. Only NICs of type
+VMXNET3 on a standard port group are reported, matching a VM's primary
+adapter in most simple deployments.
 
-# Get the power and network information of all virtual machines
-power = client.vcenter.vm.Power
-network = client.vcenter.vm.Network
-vms = client.vcenter.VM.list()
+Connection settings are read from environment variables, overridable via
+CLI flags:
+    VCENTER_SERVER    - vCenter hostname/IP
+    VCENTER_USERNAME  - vCenter username
+    VCENTER_PASSWORD  - vCenter password (prompted interactively if unset)
+"""
+from __future__ import annotations
 
-# Create an Excel workbook and worksheet
+import argparse
+import getpass
+import os
+import sys
+
 from openpyxl import Workbook
-workbook = Workbook()
-worksheet = workbook.active
-worksheet.title = "VM IP Addresses"
+from vmware.vapi.vsphere.client import create_vsphere_client
 
-# Write the headers
-worksheet.cell(row=1, column=1, value="VM Name")
-worksheet.cell(row=1, column=2, value="IP Address")
 
-# Iterate through all virtual machines and write their IP addresses to the worksheet
-for i, vm in enumerate(vms):
-    vm_name = vm.name
-    ip_address = None
-    for nic_info in network.list(vm.vm):
-        if nic_info.nic_type == "VMXNET3":
-            nic = nic_info.nic
-            if nic.backing.network_type == "STANDARD_PORTGROUP":
-                ip_address = nic.ip_address.ip_address
-    worksheet.cell(row=i+2, column=1, value=vm_name)
-    worksheet.cell(row=i+2, column=2, value=ip_address)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--server", default=os.environ.get("VCENTER_SERVER"))
+    parser.add_argument("--username", default=os.environ.get("VCENTER_USERNAME"))
+    parser.add_argument("--output", default="vm_ip_addresses.xlsx", help="output .xlsx path")
+    parser.add_argument(
+        "--insecure", action="store_true",
+        help="skip TLS certificate verification (self-signed vCenter certs); not recommended",
+    )
+    return parser.parse_args()
 
-# Save the Excel file
-workbook.save(filename="vm_ip_addresses.xlsx")
+
+def main() -> int:
+    args = parse_args()
+    if not args.server or not args.username:
+        print("Error: set --server/--username or VCENTER_SERVER/VCENTER_USERNAME", file=sys.stderr)
+        return 1
+    password = os.environ.get("VCENTER_PASSWORD") or getpass.getpass(
+        f"Password for {args.username}@{args.server}: "
+    )
+
+    session = None
+    if args.insecure:
+        import requests
+        import urllib3
+
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        print("Warning: TLS certificate verification is disabled (--insecure).", file=sys.stderr)
+        session = requests.Session()
+        session.verify = False
+
+    try:
+        client = create_vsphere_client(
+            server=args.server, username=args.username, password=password, session=session
+        )
+    except Exception as exc:  # the SDK raises assorted connection/auth errors
+        print(f"Error: failed to connect to vCenter: {exc}", file=sys.stderr)
+        return 1
+
+    network = client.vcenter.vm.Network
+    vms = client.vcenter.VM.list()
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "VM IP Addresses"
+    worksheet.cell(row=1, column=1, value="VM Name")
+    worksheet.cell(row=1, column=2, value="IP Address")
+
+    for i, vm in enumerate(vms):
+        ip_address = None
+        for nic_info in network.list(vm.vm):
+            if nic_info.nic_type == "VMXNET3":
+                nic = nic_info.nic
+                if nic.backing.network_type == "STANDARD_PORTGROUP":
+                    ip_address = nic.ip_address.ip_address
+        worksheet.cell(row=i + 2, column=1, value=vm.name)
+        worksheet.cell(row=i + 2, column=2, value=ip_address)
+
+    workbook.save(filename=args.output)
+    print(f"Wrote {len(vms)} VM(s) to {args.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

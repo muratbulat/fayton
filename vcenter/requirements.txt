@@ -1,2 +1,12 @@
-pyVmomi
-pyVim
+# Core VMware SDK - provides both the `pyVim` and `pyVmomi` import
+# namespaces used by vmip_to_vmatt.py. (The previous "pyVim" line here
+# was wrong: there is no separate PyPI package by that name.)
+pyvmomi>=8.0
+
+# Used by get_vcenter_vmip.py to write the .xlsx report
+openpyxl>=3.1
+
+# get_vcenter_vmip.py also requires the VMware vSphere Automation SDK for
+# Python (`vmware.vapi` / `com.vmware.vcenter`), which is not published to
+# PyPI. Install it manually, e.g.:
+#   pip install "git+https://github.com/vmware/vsphere-automation-sdk-python.git"

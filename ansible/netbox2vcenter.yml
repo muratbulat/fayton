@@ -1,17 +1,31 @@
 # code: language=ansible
 # https://github.com/muratbulat/fayton
+#
+# Requires the collections listed in ansible/requirements.yml:
+#   ansible-galaxy collection install -r ansible/requirements.yml
+#
+# nb_token must be supplied via the NETBOX_TOKEN environment variable, or
+# by overriding nb_token on the command line (-e nb_token=...). It is
+# never hard-coded here.
 ---
 - name: "Netbox Ip"
   gather_facts: no
   hosts: localhost
   vars:
     nb_prefix: "10.48.6.0/24"
-    nb_url: https://demo.netbox.dev
-    nb_token: fdd47c8212aa1aa20bff8d16b139ae5f9943a8ca
+    nb_url: "https://demo.netbox.dev"
+    nb_token: "{{ lookup('env', 'NETBOX_TOKEN') }}"
   tasks:
     - name: "Localhost Block"
       delegate_to: localhost
       block:
+
+        - name: "Ensure required variables are set"
+          ansible.builtin.assert:
+            that:
+              - nb_token | length > 0
+            fail_msg: "nb_token is empty. Set the NETBOX_TOKEN environment variable or pass -e nb_token=..."
+            quiet: true
 
         - name: "Netbox - Prefixten ip ve netmask bilgisi alınıyor.."
           netbox.netbox.netbox_ip_address:
@@ -21,9 +35,10 @@
               prefix: "{{ nb_prefix }}"
             state: new
           register: ip_address_info
+          no_log: true
 
         - name: "Gateway bilgisini al"
-          uri:
+          ansible.builtin.uri:
             url: "{{ nb_url }}/api/ipam/prefixes/?prefix={{ nb_prefix }}"
             method: "GET"
             headers:
@@ -31,10 +46,12 @@
               Authorization: "token {{ nb_token }}"
             status_code: 200
           register: nb_prefix_info
+          no_log: true
+          changed_when: false
 
         - name: "Netbox - Ip, netmask ve gateway bilgisi kullanıma hazırlanıyor.."
-          set_fact:
-            vc_ip_address: "{{ ip_address_info['ip_address']['address'] | ansible.utils.ipaddr('ip')  }}"
+          ansible.builtin.set_fact:
+            vc_ip_address: "{{ ip_address_info['ip_address']['address'] | ansible.utils.ipaddr('ip') }}"
             vc_netmask: "{{ ip_address_info['ip_address']['address'] | ansible.utils.ipaddr('netmask') }}"
             vc_gateway: "{{ nb_prefix_info['json']['results'][0]['custom_fields']['Gateway']['address'] | ansible.utils.ipaddr('ip') }}"
             vc_vid: "{{ nb_prefix_info['json']['results'][0]['vlan']['vid'] }}"
@@ -42,7 +59,7 @@
             vc_dns02: "{{ nb_prefix_info['json']['results'][0]['custom_fields']['DNSS02'] }}"
             vc_dns03: "{{ nb_prefix_info['json']['results'][0]['custom_fields']['DNSS03'] }}"
 
-    - name: Debug
+    - name: "Debug"
       ansible.builtin.debug:
         msg:
-        - "vc_ip_address '{{ vc_ip_address }}', vc_netmask '{{ vc_netmask }}', vc_gateway '{{ vc_gateway }}', vc_vid '{{ vc_vid }}' "
+          - "vc_ip_address '{{ vc_ip_address }}', vc_netmask '{{ vc_netmask }}', vc_gateway '{{ vc_gateway }}', vc_vid '{{ vc_vid }}' "

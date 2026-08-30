@@ -1,106 +1,147 @@
+#!/usr/bin/env python3
+"""Configure Brocade FC switch aliases and zones from CSV files over SSH.
+
+Reads alias and zone definitions from CSV files and pushes the
+corresponding `alicreate` / `zonecreate` commands to a Brocade FOS switch
+over SSH (paramiko), then saves and enables the configuration.
+
+This script makes real configuration changes on the target switch. Use
+--dry-run first, or preview the same CSV files with san_alias_ex.py /
+san_zone_ex.py, before running it against production hardware.
+
+Credentials are never hard-coded; they are read from environment variables
+or CLI flags:
+    BROCADE_SWITCH_IP  - switch management IP or hostname
+    BROCADE_USERNAME   - switch username
+    BROCADE_PASSWORD   - switch password (prompted interactively if unset)
+
+CSV format (no header row), matching san_alias_ex.py / san_zone_ex.py:
+    alias.csv: alias_name,wwn
+    zone.csv:  zone_name,alias_name[,alias_name...]
+"""
+from __future__ import annotations
+
+import argparse
 import csv
-import paramiko
+import getpass
+import os
+import sys
+from pathlib import Path
 
-# Define variables for the switch's IP address, username, and password
-switch_ip = "192.168.0.1"
-switch_username = "admin"
-switch_password = "password"
 
-# Define variables for the paths to the alias.csv and zone.csv files
-alias_csv_file = "data/alias.csv"
-zone_csv_file = "data/zone.csv"
+def read_aliases(csv_path: Path) -> list[tuple[str, str]]:
+    """Return [(alias_name, wwn), ...] from a headerless CSV file."""
+    aliases: list[tuple[str, str]] = []
+    with csv_path.open("r", newline="") as csvfile:
+        for row in csv.reader(csvfile):
+            if not row:
+                continue
+            aliases.append((row[0], row[1]))
+    return aliases
 
-# Create a dictionary to store the alias information
-alias_dict = {}
 
-# Open the alias.csv file and read its contents
-with open(alias_csv_file, 'r') as csvfile:
-    reader = csv.reader(csvfile)
-    # Skip the header row
-    next(reader)
-    # Loop through each row in the file
-    for row in reader:
-        # Add the alias name and WWN to the dictionary
-        alias_dict[row[0]] = row[1]
+def read_zones(csv_path: Path) -> list[tuple[str, list[str]]]:
+    """Return [(zone_name, [alias_name, ...]), ...] from a headerless CSV file."""
+    zones: list[tuple[str, list[str]]] = []
+    with csv_path.open("r", newline="") as csvfile:
+        for row in csv.reader(csvfile):
+            if not row:
+                continue
+            zones.append((row[0], row[1:]))
+    return zones
 
-# Create a list to store the WWNs that need aliases
-wwn_list = []
 
-# Open the zone.csv file and read its contents
-with open(zone_csv_file, 'r') as csvfile:
-    reader = csv.reader(csvfile)
-    # Skip the header row
-    next(reader)
-    # Loop through each row in the file
-    for row in reader:
-        # Loop through each WWN in the row
-        for wwn in row[1:]:
-            # If the WWN is not already an alias, add it to the list
-            if wwn not in alias_dict.values() and wwn not in wwn_list:
-                wwn_list.append(wwn)
+def run_command(ssh, command: str) -> None:
+    """Execute a command over the SSH session and echo its output."""
+    _, stdout, stderr = ssh.exec_command(command)
+    out = stdout.read().decode(errors="replace").strip()
+    err = stderr.read().decode(errors="replace").strip()
+    if out:
+        print(out)
+    if err:
+        print(err, file=sys.stderr)
 
-# Connect to the switch using SSH
-ssh = paramiko.SSHClient()
-ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect(switch_ip, username=switch_username, password=switch_password)
 
-# Create aliases for the WWNs that don't already have aliases
-for wwn in wwn_list:
-    # Generate an alias name for the WWN
-    alias_name = "alias_" + wwn.replace(":", "")
-    # Create the alias configuration command
-    command = "alicreate \"" + alias_name + "\",\"" + wwn + "\""
-    # Execute the command on the switch
-    stdin, stdout, stderr = ssh.exec_command(command)
-    # Print any output or errors from the command
-    print(stdout.read())
-    print(stderr.read())
-    # Add the alias name and WWN to the dictionary
-    alias_dict[alias_name] = wwn
+def create_aliases(ssh, aliases: list[tuple[str, str]]) -> None:
+    for alias_name, wwn in aliases:
+        run_command(ssh, f'alicreate "{alias_name}","{wwn}"')
 
-# Create a list to store the zone information
-zone_list = []
 
-# Open the zone.csv file and read its contents
-with open(zone_csv_file, 'r') as csvfile:
-    reader = csv.reader(csvfile)
-    # Skip the header row
-    next(reader)
-    # Loop through each row in the file
-    for row in reader:
-        # Create a list to store the aliases in the zone
-        alias_list = []
-        # Loop through each WWN in the row
-        for wwn in row[1:]:
-            # Look up the alias name for the WWN
-            alias_name = [k for k, v in alias_dict.items() if v == wwn]
-            # Add the alias name to the list
-            alias_list.extend(alias_name)
-        # Add the zone name and alias list to the zone list
-        zone_list.append((row[0], alias_list))
+def create_zones(ssh, zones: list[tuple[str, list[str]]]) -> None:
+    for zone_name, members in zones:
+        run_command(ssh, f'zonecreate "{zone_name}","{";".join(members)}"')
 
-# Configure the switch with the zone information
-for zone_name, alias_list in zone_list:
-    # Create the zone configuration command
-    members = ";".join(alias_list)
-    command = "zonecreate \"" + zone_name + "\",\"" + members + "\""
-    # Execute the command on the switch
-    stdin, stdout, stderr = ssh.exec_command(command)
-    # Print any output or errors from the command
-    print(stdout.read())
-    print(stderr.read())
 
-# Save the configuration to the startup configuration file
-stdin, stdout, stderr = ssh.exec_command("cfgsave")
-# Print any output or errors from the command
-print(stdout.read())
-print(stderr.read())
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--alias-csv", type=Path, default=Path("data/alias.csv"))
+    parser.add_argument("--zone-csv", type=Path, default=Path("data/zone.csv"))
+    parser.add_argument(
+        "--switch", default=os.environ.get("BROCADE_SWITCH_IP"),
+        help="switch IP/hostname (env: BROCADE_SWITCH_IP)",
+    )
+    parser.add_argument(
+        "--username", default=os.environ.get("BROCADE_USERNAME"),
+        help="switch username (env: BROCADE_USERNAME)",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="print the commands that would be run and exit, without connecting",
+    )
+    return parser.parse_args()
 
-# Enable the configuration
-stdin, stdout, stderr = ssh.exec_command("cfgenable")
-# Print any output or errors from the command
-print(stdout.read())
-print(stderr.read())
 
-# Close the SSH connection
-ssh.close()
+def main() -> int:
+    args = parse_args()
+
+    for path in (args.alias_csv, args.zone_csv):
+        if not path.is_file():
+            print(f"Error: CSV file not found: {path}", file=sys.stderr)
+            return 1
+
+    aliases = read_aliases(args.alias_csv)
+    zones = read_zones(args.zone_csv)
+
+    if args.dry_run:
+        for alias_name, wwn in aliases:
+            print(f'alicreate "{alias_name}","{wwn}"')
+        for zone_name, members in zones:
+            print(f'zonecreate "{zone_name}","{";".join(members)}"')
+        return 0
+
+    if not args.switch:
+        print("Error: switch not set (use --switch or BROCADE_SWITCH_IP)", file=sys.stderr)
+        return 1
+    if not args.username:
+        print("Error: username not set (use --username or BROCADE_USERNAME)", file=sys.stderr)
+        return 1
+    password = os.environ.get("BROCADE_PASSWORD") or getpass.getpass(
+        f"Password for {args.username}@{args.switch}: "
+    )
+
+    import paramiko
+
+    ssh = paramiko.SSHClient()
+    # AutoAddPolicy trusts unknown host keys on first connect. For
+    # production use, pre-populate known_hosts and switch to
+    # ssh.load_system_host_keys() + paramiko.RejectPolicy() instead.
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        ssh.connect(args.switch, username=args.username, password=password, timeout=15)
+        create_aliases(ssh, aliases)
+        create_zones(ssh, zones)
+        run_command(ssh, "cfgsave")
+        run_command(ssh, "cfgenable")
+    except (paramiko.SSHException, OSError) as exc:
+        print(f"Error: SSH failure: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        ssh.close()
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
