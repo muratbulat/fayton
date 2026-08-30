@@ -37,7 +37,8 @@ for alias_name, wwpn in alias_info.items():
 
 # Create zones
 for zone_name, alias_names in zone_info.items():
-    ssh.sendline(f'zonecreate "{zone_name}", "{alias_names[0]}", "{alias_names[1]}"')
+    members = ', '.join(f'"{alias}"' for alias in alias_names)
+    ssh.sendline(f'zonecreate "{zone_name}", {members}')
     ssh.expect('#')
 
 # Save configuration changes

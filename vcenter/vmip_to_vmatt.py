@@ -6,6 +6,7 @@ import datetime
 
 # Connect to vCenter server
 si = SmartConnect(host="<VCENTER_SERVER_IP>", user="<USERNAME>", pwd="<PASSWORD>")
+content = si.RetrieveContent()
 
 # Get all VMs
 vm_view = content.viewManager.CreateContainerView(content.rootFolder, [vim.VirtualMachine], True)

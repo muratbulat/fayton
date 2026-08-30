@@ -80,9 +80,15 @@ with open(zone_csv_file, 'r') as csvfile:
         zone_list.append((row[0], alias_list))
 
 # Configure the switch with the zone information
-for zone in zone_list:
+for zone_name, alias_list in zone_list:
     # Create the zone configuration command
-    command = "zonecreate \"" + zone
+    members = ";".join(alias_list)
+    command = "zonecreate \"" + zone_name + "\",\"" + members + "\""
+    # Execute the command on the switch
+    stdin, stdout, stderr = ssh.exec_command(command)
+    # Print any output or errors from the command
+    print(stdout.read())
+    print(stderr.read())
 
 # Save the configuration to the startup configuration file
 stdin, stdout, stderr = ssh.exec_command("cfgsave")
